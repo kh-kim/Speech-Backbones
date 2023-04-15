@@ -37,6 +37,7 @@ enc_kernel = 3
 enc_dropout = 0.1
 n_heads = 2
 window_size = 4
+use_pre_norm = False
 
 # decoder parameters
 dec_dim = 64
@@ -51,5 +52,5 @@ n_epochs = 10000
 batch_size = 16
 learning_rate = 1e-4
 seed = 37
-save_every = 1
-out_size = fix_len_compatibility(2*22050//256)
+save_every = 5
+out_size = fix_len_compatibility(2 * sample_rate // 256)

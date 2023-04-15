@@ -41,6 +41,7 @@ enc_kernel = params.enc_kernel
 enc_dropout = params.enc_dropout
 n_heads = params.n_heads
 window_size = params.window_size
+use_pre_norm = params.use_pre_norm
 
 n_feats = params.n_feats
 n_fft = params.n_fft
@@ -78,7 +79,7 @@ if __name__ == "__main__":
     print('Initializing model...')
     model = GradTTS(nsymbols, 1, None, n_enc_channels, filter_channels, filter_channels_dp, 
                     n_heads, n_enc_layers, enc_kernel, enc_dropout, window_size, 
-                    n_feats, dec_dim, beta_min, beta_max, pe_scale).cuda()
+                    n_feats, dec_dim, beta_min, beta_max, pe_scale, use_pre_norm).cuda()
     print('Number of encoder + duration predictor parameters: %.2fm' % (model.encoder.nparams/1e6))
     print('Number of decoder parameters: %.2fm' % (model.decoder.nparams/1e6))
     print('Total parameters: %.2fm' % (model.nparams/1e6))

@@ -7,6 +7,10 @@ def sequence_mask(length, max_length=None):
     if max_length is None:
         max_length = length.max()
     x = torch.arange(int(max_length), dtype=length.dtype, device=length.device)
+
+    # |x.unsqueeze(0)| = (1, max_length)
+    # |length.unsqueeze(1)| = (batch_size, 1)
+    # |x.unsqueeze(0) < length.unsqueeze(1)| = (batch_size, max_length)
     return x.unsqueeze(0) < length.unsqueeze(1)
 
 

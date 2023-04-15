@@ -21,7 +21,7 @@ from model.utils import sequence_mask, generate_path, duration_loss, fix_len_com
 class GradTTS(BaseModule):
     def __init__(self, n_vocab, n_spks, spk_emb_dim, n_enc_channels, filter_channels, filter_channels_dp, 
                  n_heads, n_enc_layers, enc_kernel, enc_dropout, window_size, 
-                 n_feats, dec_dim, beta_min, beta_max, pe_scale):
+                 n_feats, dec_dim, beta_min, beta_max, pe_scale, use_pre_norm):
         super(GradTTS, self).__init__()
         self.n_vocab = n_vocab
         self.n_spks = n_spks
@@ -39,12 +39,13 @@ class GradTTS(BaseModule):
         self.beta_min = beta_min
         self.beta_max = beta_max
         self.pe_scale = pe_scale
+        self.use_pre_norm = use_pre_norm
 
         if n_spks > 1:
             self.spk_emb = torch.nn.Embedding(n_spks, spk_emb_dim)
         self.encoder = TextEncoder(n_vocab, n_feats, n_enc_channels, 
                                    filter_channels, filter_channels_dp, n_heads, 
-                                   n_enc_layers, enc_kernel, enc_dropout, window_size)
+                                   n_enc_layers, enc_kernel, enc_dropout, window_size, use_pre_norm=use_pre_norm)
         self.decoder = Diffusion(n_feats, dec_dim, n_spks, spk_emb_dim, beta_min, beta_max, pe_scale)
 
     @torch.no_grad()
@@ -113,6 +114,10 @@ class GradTTS(BaseModule):
             out_size (int, optional): length (in mel's sampling rate) of segment to cut, on which decoder will be trained.
                 Should be divisible by 2^{num of UNet downsamplings}. Needed to increase batch size.
         """
+        # |x| = (batch_size, max_text_length)
+        # |x_lengths| = (batch_size,)
+        # |y| = (batch_size, n_feats, max_mel_length)
+        # |y_lengths| = (batch_size,)
         x, x_lengths, y, y_lengths = self.relocate_input([x, x_lengths, y, y_lengths])
 
         if self.n_spks > 1:
@@ -161,11 +166,18 @@ class GradTTS(BaseModule):
                 y_cut[i, :, :y_cut_length] = y_[:, cut_lower:cut_upper]
                 attn_cut[i, :, :y_cut_length] = attn[i, :, cut_lower:cut_upper]
             y_cut_lengths = torch.LongTensor(y_cut_lengths)
-            y_cut_mask = sequence_mask(y_cut_lengths).unsqueeze(1).to(y_mask)
+            # y_cut_mask = sequence_mask(y_cut_lengths).unsqueeze(1).to(y_mask)
+            y_cut_mask = sequence_mask(y_cut_lengths, out_size).unsqueeze(1).to(y_mask)
             
             attn = attn_cut
             y = y_cut
             y_mask = y_cut_mask
+            # |attn| = (batch_size, max_text_length, out_size)
+            # |y| = (batch_size, n_feats, out_size)
+            # |y_mask| = (batch_size, 1, out_size)
+
+            if y.shape[-1] != out_size or y_mask.shape[-1] != out_size:
+                print(y.shape, y_mask.shape, attn.shape)
 
         # Align encoded text with mel-spectrogram and get mu_y segment
         mu_y = torch.matmul(attn.squeeze(1).transpose(1, 2), mu_x.transpose(1, 2))

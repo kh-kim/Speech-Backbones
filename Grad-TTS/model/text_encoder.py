@@ -241,7 +241,7 @@ class FFN(BaseModule):
 
 class Encoder(BaseModule):
     def __init__(self, hidden_channels, filter_channels, n_heads, n_layers, 
-                 kernel_size=1, p_dropout=0.0, window_size=None, **kwargs):
+                 kernel_size=1, p_dropout=0.0, window_size=None, use_pre_norm=True, **kwargs):
         super(Encoder, self).__init__()
         self.hidden_channels = hidden_channels
         self.filter_channels = filter_channels
@@ -250,6 +250,7 @@ class Encoder(BaseModule):
         self.kernel_size = kernel_size
         self.p_dropout = p_dropout
         self.window_size = window_size
+        self.use_pre_norm = use_pre_norm
 
         self.drop = torch.nn.Dropout(p_dropout)
         self.attn_layers = torch.nn.ModuleList()
@@ -267,13 +268,24 @@ class Encoder(BaseModule):
     def forward(self, x, x_mask):
         attn_mask = x_mask.unsqueeze(2) * x_mask.unsqueeze(-1)
         for i in range(self.n_layers):
-            x = x * x_mask
-            y = self.attn_layers[i](x, x, attn_mask)
-            y = self.drop(y)
-            x = self.norm_layers_1[i](x + y)
-            y = self.ffn_layers[i](x, x_mask)
-            y = self.drop(y)
-            x = self.norm_layers_2[i](x + y)
+            if self.use_pre_norm:
+                x = x * x_mask
+                x = self.norm_layers_1[i](x)
+                y = self.attn_layers[i](x, x, attn_mask)
+                y = self.drop(y)
+                x = x + y
+                x = self.norm_layers_2[i](x)
+                y = self.ffn_layers[i](x, x_mask)
+                y = self.drop(y)
+                x = x + y
+            else:
+                x = x * x_mask
+                y = self.attn_layers[i](x, x, attn_mask)
+                y = self.drop(y)
+                x = self.norm_layers_1[i](x + y)
+                y = self.ffn_layers[i](x, x_mask)
+                y = self.drop(y)
+                x = self.norm_layers_2[i](x + y)
         x = x * x_mask
         return x
 
@@ -281,7 +293,7 @@ class Encoder(BaseModule):
 class TextEncoder(BaseModule):
     def __init__(self, n_vocab, n_feats, n_channels, filter_channels, 
                  filter_channels_dp, n_heads, n_layers, kernel_size, 
-                 p_dropout, window_size=None, spk_emb_dim=64, n_spks=1):
+                 p_dropout, window_size=None, spk_emb_dim=64, n_spks=1, use_pre_norm=True):
         super(TextEncoder, self).__init__()
         self.n_vocab = n_vocab
         self.n_feats = n_feats
@@ -295,6 +307,7 @@ class TextEncoder(BaseModule):
         self.window_size = window_size
         self.spk_emb_dim = spk_emb_dim
         self.n_spks = n_spks
+        self.use_pre_norm = use_pre_norm
 
         self.emb = torch.nn.Embedding(n_vocab, n_channels)
         torch.nn.init.normal_(self.emb.weight, 0.0, n_channels**-0.5)
@@ -303,7 +316,7 @@ class TextEncoder(BaseModule):
                                    kernel_size=5, n_layers=3, p_dropout=0.5)
 
         self.encoder = Encoder(n_channels + (spk_emb_dim if n_spks > 1 else 0), filter_channels, n_heads, n_layers, 
-                               kernel_size, p_dropout, window_size=window_size)
+                               kernel_size, p_dropout, window_size=window_size, use_pre_norm=use_pre_norm)
 
         self.proj_m = torch.nn.Conv1d(n_channels + (spk_emb_dim if n_spks > 1 else 0), n_feats, 1)
         self.proj_w = DurationPredictor(n_channels + (spk_emb_dim if n_spks > 1 else 0), filter_channels_dp, 
