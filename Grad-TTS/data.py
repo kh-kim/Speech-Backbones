@@ -42,7 +42,12 @@ class TextMelDataset(torch.utils.data.Dataset):
 
     def get_pair(self, filepath_and_text):
         filepath, text = filepath_and_text[0], filepath_and_text[1]
-        text = self.get_text(text, add_blank=self.add_blank)
+        try:
+            text = self.get_text(text, add_blank=self.add_blank)
+        except:
+            print(f"Error: {filepath} {text}")
+            text = torch.IntTensor([0])
+
         mel = self.get_mel(filepath)
         return (text, mel)
 
