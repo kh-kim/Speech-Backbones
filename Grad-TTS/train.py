@@ -15,7 +15,7 @@ from scipy.io.wavfile import write
 
 import torch
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
+from torch.cuda.amp import GradScaler, autocast
 
 import params
 from model import GradTTS
@@ -41,6 +41,7 @@ batch_size = params.batch_size
 out_size = params.out_size
 learning_rate = params.learning_rate
 random_seed = params.seed
+accumulation_steps = params.accumulation_steps
 
 nsymbols = len(symbols) + 1 if add_blank else len(symbols)
 n_enc_channels = params.n_enc_channels
@@ -166,6 +167,8 @@ if __name__ == "__main__":
     if params.use_wandb:
         wandb.log(to_log)
 
+    scaler = GradScaler()
+
     print('Start training...')
     iteration = 0
     for epoch in range(1, n_epochs + 1):
@@ -173,21 +176,43 @@ if __name__ == "__main__":
         train_dur_losses, train_prior_losses, train_diff_losses = [], [], []
 
         with tqdm(train_loader, total=len(train_dataset) // batch_size) as progress_bar:
-            for batch_idx, batch in enumerate(progress_bar):
-                model.zero_grad()
-                x, x_lengths = batch['x'].cuda(), batch['x_lengths'].cuda()
-                y, y_lengths = batch['y'].cuda(), batch['y_lengths'].cuda()
-                dur_loss, prior_loss, diff_loss = model.compute_loss(x, x_lengths,
-                                                                     y, y_lengths,
-                                                                     out_size=out_size)
-                loss = sum([dur_loss, prior_loss, diff_loss])
-                loss.backward()
+            nan_flag = False
 
-                enc_grad_norm = torch.nn.utils.clip_grad_norm_(model.encoder.parameters(),
-                                                               max_norm=1)
-                dec_grad_norm = torch.nn.utils.clip_grad_norm_(model.decoder.parameters(),
-                                                               max_norm=1)
-                optimizer.step()
+            for batch_idx, batch in enumerate(progress_bar):
+                with autocast():
+                    x, x_lengths = batch['x'].cuda(), batch['x_lengths'].cuda()
+                    y, y_lengths = batch['y'].cuda(), batch['y_lengths'].cuda()
+                    dur_loss, prior_loss, diff_loss = model.compute_loss(x, x_lengths,
+                                                                        y, y_lengths,
+                                                                        out_size=out_size)
+
+                    loss = sum([dur_loss, prior_loss, diff_loss * params.diff_loss_scale])
+                    loss /= accumulation_steps
+                    
+                # loss.backward()
+                scaler.scale(loss).backward()
+
+                if torch.isnan(loss):
+                    nan_flag = True
+
+                if (batch_idx + 1) % accumulation_steps == 0:
+                    if nan_flag:
+                        nan_flag = False
+                        model.zero_grad()
+                        continue
+                    else:
+                        nan_flag = False
+
+                    enc_grad_norm = torch.nn.utils.clip_grad_norm_(model.encoder.parameters(),
+                                                                max_norm=1)
+                    dec_grad_norm = torch.nn.utils.clip_grad_norm_(model.decoder.parameters(),
+                                                                max_norm=1)
+
+                    # optimizer.step()
+                    scaler.step(optimizer)
+                    scaler.update()
+
+                    model.zero_grad()
 
                     if params.use_tensorboard:
                         logger.add_scalar('training/duration_loss', dur_loss.item(),

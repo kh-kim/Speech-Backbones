@@ -61,7 +61,10 @@ use_wandb = True
 test_size = 4
 n_epochs = 3000
 batch_size = 16
+accumulation_steps = 1
 learning_rate = 1e-4
+diff_loss_scale = 1.
+
 seed = 37
 save_every = 5
 out_size = fix_len_compatibility(2 * sample_rate // 256)
