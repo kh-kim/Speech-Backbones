@@ -10,9 +10,16 @@ from model.utils import fix_len_compatibility
 
 
 # data parameters
-train_filelist_path = 'resources/filelists/ljspeech/train.txt'
-valid_filelist_path = 'resources/filelists/ljspeech/valid.txt'
-test_filelist_path = 'resources/filelists/ljspeech/test.txt'
+# train_filelist_path = 'resources/filelists/ljspeech/train.txt'
+# valid_filelist_path = 'resources/filelists/ljspeech/valid.txt'
+# test_filelist_path = 'resources/filelists/ljspeech/test.txt'
+# train_filelist_path = '/home/khkim/workspace/speech_synthesis/DeepCL_Speech_Dataset/train.txt'
+# valid_filelist_path = '/home/khkim/workspace/speech_synthesis/DeepCL_Speech_Dataset/valid.txt'
+# test_filelist_path = '/home/khkim/workspace/speech_synthesis/DeepCL_Speech_Dataset/valid.txt'
+train_filelist_path = '/home/khkim/workspace/speech_synthesis/DeepCL_Speech_Dataset_ALL/train.txt'
+valid_filelist_path = '/home/khkim/workspace/speech_synthesis/DeepCL_Speech_Dataset_ALL/valid.txt'
+test_filelist_path = '/home/khkim/workspace/speech_synthesis/DeepCL_Speech_Dataset_ALL/valid.txt'
+
 cmudict_path = 'resources/cmu_dictionary'
 for_korean = True
 
@@ -46,9 +53,13 @@ beta_max = 20.0
 pe_scale = 1000  # 1 for `grad-tts-old.pt` checkpoint
 
 # training parameters
-log_dir = 'logs/new_exp'
+run_name = 'navie_100h'
+log_dir = f'logs/{run_name}'
+use_tensorboard = False
+use_wandb = True
+
 test_size = 4
-n_epochs = 10000
+n_epochs = 3000
 batch_size = 16
 learning_rate = 1e-4
 seed = 37

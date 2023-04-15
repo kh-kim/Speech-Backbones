@@ -5,9 +5,13 @@
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # MIT License for more details.
+import json
+from datetime import datetime
 
 import numpy as np
 from tqdm import tqdm
+
+from scipy.io.wavfile import write
 
 import torch
 from torch.utils.data import DataLoader
@@ -18,6 +22,12 @@ from model import GradTTS
 from data import TextMelDataset, TextMelBatchCollate
 from utils import plot_tensor, save_plot
 from text.symbols import symbols
+
+# For HiFi-GAN
+import sys
+sys.path.append('./hifi-gan/')
+from env import AttrDict
+from models import Generator as HiFiGAN
 
 
 train_filelist_path = params.train_filelist_path
@@ -60,6 +70,28 @@ config = {k:v for k, v in vars(params).items() if not k.startswith('__')}
 del config['fix_len_compatibility']
 
 
+def get_hifigan():
+    with open('./checkpts/hifigan-config.json') as f:
+        h = AttrDict(json.load(f))
+    hifigan = HiFiGAN(h)
+    hifigan.load_state_dict(torch.load('./checkpts/hifigan.pt', map_location=lambda loc, storage: loc)['generator'])
+    _ = hifigan.cuda().eval()
+    hifigan.remove_weight_norm()
+
+    return hifigan
+
+
+def get_audio(hifigan, y_dec):
+    with torch.no_grad():
+        audio = hifigan.forward(y_dec).cpu().squeeze().clamp(-1, 1)
+    audio = audio.numpy()
+
+    return audio
+
+
+def get_now():
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
 if __name__ == "__main__":
     torch.manual_seed(random_seed)
     np.random.seed(random_seed)
@@ -68,6 +100,14 @@ if __name__ == "__main__":
     print(json.dumps(config, indent=4, ensure_ascii=False))
 
     print('Initializing logger...')
+    if params.use_tensorboard:
+        from torch.utils.tensorboard import SummaryWriter
+        logger = SummaryWriter(log_dir=log_dir)
+    if params.use_wandb:
+        import wandb
+        wandb.init(project="Grad-TTS", config=config)
+        wandb.run.name = params.run_name + '_' + get_now()
+        wandb.run.save()
 
     import os
     os.makedirs(log_dir, exist_ok=True)
@@ -97,17 +137,34 @@ if __name__ == "__main__":
     print('Number of decoder parameters: %.2fm' % (model.decoder.nparams/1e6))
     print('Total parameters: %.2fm' % (model.nparams/1e6))
 
+    if params.use_wandb:
+        wandb.watch(model)
+
     print('Initializing optimizer...')
     optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate)
 
     print('Initializing test batch...')
     test_batch = valid_dataset.sample_test_batch(size=params.test_size)
 
+    to_log = {
+        "ground_truth": []
+    }
     for i, item in enumerate(test_batch):
         mel = item['y']
-        logger.add_image(f'image_{i}/ground_truth', plot_tensor(mel.squeeze()),
-                         global_step=0, dataformats='HWC')
+
+        if params.use_tensorboard:
+            logger.add_image(f'image_{i}/ground_truth', plot_tensor(mel.squeeze()),
+                            global_step=0, dataformats='HWC')
+        if params.use_wandb:
+            to_log["ground_truth"].append(wandb.Image(
+                plot_tensor(mel.squeeze()),
+                caption=f'image_{i}',
+            ))
+
         save_plot(mel.squeeze(), f'{log_dir}/original_{i}.png')
+
+    if params.use_wandb:
+        wandb.log(to_log)
 
     print('Start training...')
     iteration = 0
@@ -132,16 +189,28 @@ if __name__ == "__main__":
                                                                max_norm=1)
                 optimizer.step()
 
-                logger.add_scalar('training/duration_loss', dur_loss.item(),
-                                  global_step=iteration)
-                logger.add_scalar('training/prior_loss', prior_loss.item(),
-                                  global_step=iteration)
-                logger.add_scalar('training/diffusion_loss', diff_loss.item(),
-                                  global_step=iteration)
-                logger.add_scalar('training/encoder_grad_norm', enc_grad_norm,
-                                  global_step=iteration)
-                logger.add_scalar('training/decoder_grad_norm', dec_grad_norm,
-                                  global_step=iteration)
+                    if params.use_tensorboard:
+                        logger.add_scalar('training/duration_loss', dur_loss.item(),
+                                        global_step=iteration)
+                        logger.add_scalar('training/prior_loss', prior_loss.item(),
+                                        global_step=iteration)
+                        logger.add_scalar('training/diffusion_loss', diff_loss.item(),
+                                        global_step=iteration)
+                        logger.add_scalar('training/encoder_grad_norm', enc_grad_norm,
+                                        global_step=iteration)
+                        logger.add_scalar('training/decoder_grad_norm', dec_grad_norm,
+                                        global_step=iteration)
+                        logger.add_scalar('training/total_loss', loss.item(),
+                                        global_step=iteration)
+                    if params.use_wandb:
+                        wandb.log({
+                            'train_duration_loss': dur_loss.item(),
+                            'train_prior_loss': prior_loss.item(),
+                            'train_diffusion_loss': diff_loss.item(),
+                            'train_encoder_grad_norm': enc_grad_norm,
+                            'train_decoder_grad_norm': dec_grad_norm,
+                            'train_total_loss': loss.item(),
+                        })
                 
                 train_dur_losses.append(dur_loss.item())
                 train_prior_losses.append(prior_loss.item())
@@ -191,31 +260,83 @@ if __name__ == "__main__":
         with open(f'{log_dir}/train.log', 'a') as f:
             f.write(log_msg)
 
+        if params.use_tensorboard:
+            logger.add_scalar('validation/duration_loss_mean', np.mean(train_dur_losses),
+                              global_step=epoch)
+            logger.add_scalar('validation/prior_loss_mean', np.mean(train_prior_losses),
+                              global_step=epoch)
+            logger.add_scalar('validation/diffusion_loss_mean', np.mean(train_diff_losses),
+                              global_step=epoch)
+            logger.add_scalar('validation/total_loss_mean', np.mean(train_dur_losses) + np.mean(train_prior_losses) + np.mean(train_diff_losses),
+                              global_step=epoch)
+            logger.add_scalar('validation/duration_loss_median', np.median(train_dur_losses),
+                              global_step=epoch)
+            logger.add_scalar('validation/prior_loss_median', np.median(train_prior_losses),
+                              global_step=epoch)
+            logger.add_scalar('validation/diffusion_loss_median', np.median(train_diff_losses),
+                              global_step=epoch)
+            logger.add_scalar('validation/total_loss_median', np.median(train_dur_losses) + np.median(train_prior_losses) + np.median(train_diff_losses),
+                              global_step=epoch)
+        if params.use_wandb:
+            wandb.log({
+                'valid_duration_loss_mean': np.mean(train_dur_losses),
+                'valid_prior_loss_mean': np.mean(train_prior_losses),
+                'valid_diffusion_loss_mean': np.mean(train_diff_losses),
+                'valid_total_loss_mean': np.mean(train_dur_losses) + np.mean(train_prior_losses) + np.mean(train_diff_losses),
+                'valid_duration_loss_median': np.median(train_dur_losses),
+                'valid_prior_loss_median': np.median(train_prior_losses),
+                'valid_diffusion_loss_median': np.median(train_diff_losses),
+                'valid_total_loss_median': np.median(train_dur_losses) + np.median(train_prior_losses) + np.median(train_diff_losses),
+            })
+
         if epoch % params.save_every > 0:
             continue
 
         model.eval()
         print('Synthesis...')
         with torch.no_grad():
+            hifigan = get_hifigan()
+
+            to_log = {
+                "generated_enc": [],
+                "generated_dec": [],
+                "alignment": [],
+                "generated_audio": [],
+            }
+
             for i, item in enumerate(test_batch):
                 x = item['x'].to(torch.long).unsqueeze(0).cuda()
                 x_lengths = torch.LongTensor([x.shape[-1]]).cuda()
-                y_enc, y_dec, attn = model(x, x_lengths, n_timesteps=50)
-                logger.add_image(f'image_{i}/generated_enc',
-                                 plot_tensor(y_enc.squeeze().cpu()),
-                                 global_step=iteration, dataformats='HWC')
-                logger.add_image(f'image_{i}/generated_dec',
-                                 plot_tensor(y_dec.squeeze().cpu()),
-                                 global_step=iteration, dataformats='HWC')
-                logger.add_image(f'image_{i}/alignment',
-                                 plot_tensor(attn.squeeze().cpu()),
-                                 global_step=iteration, dataformats='HWC')
+                y_enc, y_dec, attn = model(x, x_lengths, n_timesteps=100, temperature=20.0)
+
+                if params.use_tensorboard:
+                    logger.add_image(f'image_{i}/generated_enc',
+                                     plot_tensor(y_enc.squeeze().cpu()),
+                                     global_step=iteration, dataformats='HWC')
+                    logger.add_image(f'image_{i}/generated_dec',
+                                     plot_tensor(y_dec.squeeze().cpu()),
+                                     global_step=iteration, dataformats='HWC')
+                    logger.add_image(f'image_{i}/alignment',
+                                     plot_tensor(attn.squeeze().cpu()),
+                                     global_step=iteration, dataformats='HWC')
+                if params.use_wandb:
+                    to_log['generated_enc'].append(wandb.Image(plot_tensor(y_enc.squeeze().cpu()), caption=f'image_{i}'))
+                    to_log['generated_dec'].append(wandb.Image(plot_tensor(y_dec.squeeze().cpu()), caption=f'image_{i}'))
+                    to_log['alignment'].append(wandb.Image(plot_tensor(attn.squeeze().cpu()), caption=f'image_{i}'))
+
+                    to_log['generated_audio'].append(
+                        wandb.Audio(get_audio(hifigan, y_dec), sample_rate=params.sample_rate, caption=f'audio_{i}')
+                    )
+
                 save_plot(y_enc.squeeze().cpu(), 
                           f'{log_dir}/generated_enc_{i}.png')
                 save_plot(y_dec.squeeze().cpu(), 
                           f'{log_dir}/generated_dec_{i}.png')
                 save_plot(attn.squeeze().cpu(), 
                           f'{log_dir}/alignment_{i}.png')
+                
+            if params.use_wandb:
+                wandb.log(to_log)
 
         ckpt = model.state_dict()
         torch.save(ckpt, f=f"{log_dir}/grad_{epoch}.pt")
