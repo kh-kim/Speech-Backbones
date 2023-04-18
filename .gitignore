@@ -1,0 +1,10 @@
+Grad-TTS/DUMMY
+Grad-TTS/logs
+*.pyc
+*.pt
+*.o
+*.so
+Grad-TTS/wavs
+Grad-TTS/wandb
+Grad-TTS/DeepCL_Speech_Dataset
+*.wav
